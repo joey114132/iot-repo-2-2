@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Dict, Any
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -24,6 +24,9 @@ from exit_gate_test_dialog import ExitGateTestDialog
 from parking_guide_test_dialog import ParkingGuideTestDialog
 from lpr_enter_test_dialog import LprEnterTestDialog
 from lpr_exit_test_dialog import LprExitTestDialog
+from rfid_management_tab import RfidManagementTab
+
+from PyQt6.QtWidgets import QTabWidget
 
 ENTRY_GATE_GUID = "DEV-GATE-1"
 
@@ -36,6 +39,9 @@ class MainWindow(QMainWindow):
       서버 연결 상태, 디바이스 리스트, UDP 관련 정보 등을 표시한다.
     - TransmissionManager 를 통해 서버와 통신하여 정보를 갱신한다.
     """
+
+    lpr_popup_signal = pyqtSignal(bool, bool)  # is_exit, show
+    rfid_scanned_signal = pyqtSignal(str)
 
     def __init__(
         self,
@@ -55,15 +61,29 @@ class MainWindow(QMainWindow):
         self._lpr_dialog: LprEnterTestDialog | None = None
         self._lpr_exit_dialog: LprExitTestDialog | None = None
 
+        self.lpr_popup_signal.connect(self._handle_lpr_popup)
+        self._device_mgr.on_lpr_popup = self._emit_lpr_popup
+
         self.setWindowTitle("스마트 주차장 - 디바이스 클라이언트 대시보드")
         self.resize(1100, 700)
 
-        root = QWidget()
-        self.setCentralWidget(root)
-        main_layout = QVBoxLayout()
-        root.setLayout(main_layout)
+        # 탭 위젯 생성
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        # ───────── 상단 요약 영역 ─────────
+        # 1. 메인 대시보드 탭
+        self.dashboard_tab = QWidget()
+        main_layout = QVBoxLayout(self.dashboard_tab)
+        
+        # 2. 입주민 관리 탭
+        self.rfid_tab = RfidManagementTab(self._tx._api)
+        self.rfid_scanned_signal.connect(self.rfid_tab.on_rfid_scanned)
+        self._device_mgr.on_rfid_scan = self.rfid_scanned_signal.emit
+
+        self.tabs.addTab(self.dashboard_tab, "기기 대시보드")
+        self.tabs.addTab(self.rfid_tab, "입주민(RFID) / 캐시 관리")
+
+        # ───────── 상단 요약 영역 (대시보드 탭에 추가) ─────────
         summary_box = QGroupBox("연결 요약")
         summary_layout = QHBoxLayout()
         summary_box.setLayout(summary_layout)
@@ -159,10 +179,12 @@ class MainWindow(QMainWindow):
         self._update_devices_table(devices_to_show)
 
         entry_gate_connected = False
+        exit_gate_connected = False
         for dev in all_devices:
             if (dev.get("device_guid") or "").strip() == ENTRY_GATE_GUID:
                 entry_gate_connected = bool(dev.get("is_connected"))
-                break
+            elif (dev.get("device_guid") or "").strip() == "DEV-GATE-2":
+                exit_gate_connected = bool(dev.get("is_connected"))
 
         operation_mode_on, free_slots, gate_sensor_state, gate_auto_state = self._tx.get_operation_mode_snapshot()
         entry_detected, exit_detected = self._tx.get_entry_exit_detection_snapshot()
@@ -171,6 +193,12 @@ class MainWindow(QMainWindow):
             gate_sensor_state,
             entry_detected,
             exit_detected,
+            gate_auto_state_from_server=gate_auto_state,
+        )
+        self._device_mgr.sync_exit_gate_mode(
+            exit_gate_connected,
+            gate_sensor_state,
+            gate_auto_state_from_server=gate_auto_state,
         )
         self._device_mgr.sync_exit_lcd_base(
             operation_mode_on,
@@ -208,7 +236,11 @@ class MainWindow(QMainWindow):
     def open_lpr_enter_test_dialog(self) -> None:
         """입구 LPR 카메라(esp32_lpr_enter) 테스트용 팝업을 연다."""
         if self._lpr_dialog is None:
-            self._lpr_dialog = LprEnterTestDialog(self._tx, self)
+            self._lpr_dialog = LprEnterTestDialog(
+                self._tx,
+                on_gate_open=lambda: self._device_mgr.open_gate(target_guid="DEV-GATE-1"),
+                parent=self,
+            )
         self._lpr_dialog.show()
         self._lpr_dialog.raise_()
         self._lpr_dialog.activateWindow()
@@ -216,10 +248,31 @@ class MainWindow(QMainWindow):
     def open_lpr_exit_test_dialog(self) -> None:
         """출구 LPR 카메라(esp32_lpr_exit) 테스트용 팝업을 연다."""
         if self._lpr_exit_dialog is None:
-            self._lpr_exit_dialog = LprExitTestDialog(self._tx, self)
+            self._lpr_exit_dialog = LprExitTestDialog(
+                self._tx,
+                on_gate_open=lambda: self._device_mgr.open_gate(target_guid="DEV-GATE-2"),
+                parent=self,
+            )
         self._lpr_exit_dialog.show()
         self._lpr_exit_dialog.raise_()
         self._lpr_exit_dialog.activateWindow()
+
+    def _emit_lpr_popup(self, is_exit: bool, show: bool) -> None:
+        self.lpr_popup_signal.emit(is_exit, show)
+
+    def _handle_lpr_popup(self, is_exit: bool, show: bool) -> None:
+        if show:
+            if is_exit:
+                self.open_lpr_exit_test_dialog()
+            else:
+                self.open_lpr_enter_test_dialog()
+        else:
+            if is_exit and self._lpr_exit_dialog is not None:
+                self._lpr_exit_dialog.close()
+                self._lpr_exit_dialog = None
+            elif not is_exit and self._lpr_dialog is not None:
+                self._lpr_dialog.close()
+                self._lpr_dialog = None
 
     def _update_summary(self, devices: List[Dict[str, Any]] | None = None) -> None:
         health = self._info.server_health or {}

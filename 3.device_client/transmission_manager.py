@@ -41,6 +41,9 @@ class TransmissionManager:
         self._lpr_exit_frame_queue: Queue = Queue(maxsize=5)
         self._lpr_exit_last_frame_ts: float = 0.0
         self._lpr_exit_udp_receiver: Optional[Esp32UdpReceiver] = None
+        # 최근 프레임 보유 (백그라운드 OCR 워커용, non-consuming)
+        self._latest_lpr_frame: Optional[tuple] = None
+        self._latest_lpr_exit_frame: Optional[tuple] = None
         # OCR 실행 제어 플래그
         self._lpr_ocr_entry_ui_active: bool = False
         self._lpr_ocr_exit_ui_active: bool = False
@@ -111,10 +114,13 @@ class TransmissionManager:
             self._lpr_ocr_entry_apds_until = expire_at
 
     def should_run_lpr_ocr(self, is_exit: bool) -> bool:
+        """
+        테스트 UI가 열려 있거나, APDS(입/출차 감지) 센서가 최근에 반응했을 때만 OCR을 허용한다.
+        """
         now = time.time()
         if is_exit:
-            return self._lpr_ocr_exit_ui_active and (now <= self._lpr_ocr_exit_apds_until)
-        return self._lpr_ocr_entry_ui_active and (now <= self._lpr_ocr_entry_apds_until)
+            return self._lpr_ocr_exit_ui_active or (now <= self._lpr_ocr_exit_apds_until)
+        return self._lpr_ocr_entry_ui_active or (now <= self._lpr_ocr_entry_apds_until)
 
     # ───────── 입/출차 감지 센서(T1/T2) 상태 반영 ─────────
     def set_entry_exit_sensor_connected(self, connected: bool) -> None:
@@ -242,6 +248,14 @@ class TransmissionManager:
 
     def set_gate_auto_state(self, gate_auto_state: int) -> None:
         self.set_gate_state(gate_auto_state=int(gate_auto_state))
+
+    def record_entry(self, license_plate: str) -> Dict[str, Any]:
+        """입차 기록 (LPR -> 서버)"""
+        return self._api.record_entry(license_plate)
+
+    def record_exit(self, license_plate: str, ext_rfid_registered: bool = False) -> Dict[str, Any]:
+        """출차 기록 및 요금 계산 (LPR -> 서버)"""
+        return self._api.record_exit(license_plate, ext_rfid_registered)
 
     def set_tower_slots_inactive(self) -> None:
         """
@@ -577,9 +591,11 @@ class TransmissionManager:
         t.start()
 
     def _on_lpr_udp_frame(self, fno: int, img: Any) -> None:
-        """입구 LPR(예: UDP 7070) 프레임 수신 시 호출. 연결 상태 갱신 + 테스트 다이얼로그용 큐에 적재."""
+        if fno % 30 == 0:
+            print(f"[UDP-DEBUG] Entry Frame received: fno={fno}")
         self._mark_lpr_seen()
         self._lpr_last_frame_ts = time.time()
+        self._latest_lpr_frame = (fno, img)  # non-consuming latest frame
         try:
             if self._lpr_frame_queue.full():
                 self._lpr_frame_queue.get_nowait()
@@ -588,7 +604,8 @@ class TransmissionManager:
             pass
 
     def _on_lpr_exit_udp_frame(self, fno: int, img: Any) -> None:
-        """출구 LPR(예: UDP 7090) 프레임 수신 시 호출. 출구 전용 큐에 적재."""
+        if fno % 30 == 0:
+            print(f"[UDP-DEBUG] Exit Frame received: fno={fno}")
         self._mark_lpr_exit_seen()
         self._lpr_exit_last_frame_ts = time.time()
         try:
@@ -596,6 +613,7 @@ class TransmissionManager:
                 self._lpr_exit_frame_queue.get_nowait()
             if img is not None:
                 img = cv2.flip(img, 1)
+            self._latest_lpr_exit_frame = (fno, img)  # non-consuming latest frame
             self._lpr_exit_frame_queue.put((fno, img))
         except Exception:
             pass
@@ -612,6 +630,12 @@ class TransmissionManager:
         if self._lpr_last_frame_ts <= 0:
             return False
         return (time.time() - self._lpr_last_frame_ts) <= timeout_sec
+
+    def get_latest_lpr_frame(self, is_exit: bool) -> Optional[tuple]:
+        """Non-consuming: 백그라운드 OCR 워커가 가장 최근 프레임을 가져갈 때 사용."""
+        if is_exit:
+            return self._latest_lpr_exit_frame
+        return self._latest_lpr_frame
 
     # 입구/출구를 명시적으로 구분하는 헬퍼 (향후 출구 테스트 UI 등에서 사용)
     def get_lpr_entry_frame(self) -> Optional[tuple[int, Any]]:
@@ -652,30 +676,23 @@ class TransmissionManager:
         # 연결 상태는 UDP 7070 패킷 수신으로만 갱신 (여기서는 _mark_lpr_seen 호출 안 함)
 
     def _set_lpr_connected(self, connected: bool, force: bool = False) -> None:
-        """입구 LPR(lpr_camera) 장비의 is_connected 플래그를 갱신.
-
-        - DB/init_manual.sql 기준으로 extra_config 안의 udp_port 로
-          입구(7070) / 출구(7090)를 구분한다.
-        - 여기서는 입구 포트(settings.lpr_enter_udp_port)에 해당하는 행만 업데이트한다.
-        - device_clients.devices_ids 에 있는 장비만 갱신한다.
-        """
+        """입구 LPR(DEV-LPR-1, udp_port=7070) 장비의 is_connected 플래그를 갱신."""
         if self._lpr_connected == connected and not force:
             return
         self._lpr_connected = connected
 
-        devices: List[Dict[str, Any]] = self._api.list_devices()
+        devices = self._api.list_devices()
         managed = self._managed_device_ids()
         changed = False
+
         for d in devices:
             typ = (d.get("type") or "").lower()
-            # DB/init_manual.sql 기준 type 은 'lpr_camera' 로 저장되어 있음.
             if typ in ("lpr_camera", "lpr_camera_server"):
                 name = (d.get("name") or "").strip()
                 guid = (d.get("device_guid") or "").strip()
 
-                # 1) extra_config 의 udp_port 로 입구/출구를 구분
                 udp_port = None
-                cfg = d.get("extra_config")
+                cfg = d.get("config")
                 if isinstance(cfg, str):
                     try:
                         cfg_obj = json.loads(cfg)
@@ -685,12 +702,12 @@ class TransmissionManager:
                     cfg_obj = cfg
                 else:
                     cfg_obj = {}
+
                 try:
                     udp_port = int(cfg_obj.get("udp_port")) if "udp_port" in cfg_obj else None
                 except Exception:
                     udp_port = None
 
-                # 2) udp_port 가 없더라도, 이름/Guid 으로 "입구" 카메라만 선택
                 is_entry_by_name = "입구" in name
                 is_entry_by_guid = guid.upper() in ("DEV-LPR-1",)
 
@@ -710,6 +727,12 @@ class TransmissionManager:
                     d["is_connected"] = connected
                     changed = True
 
+        if changed:
+            self._info.update_from_server(
+                health=self._info.server_health,
+                devices=devices,
+            )
+
     def _set_lpr_exit_connected(self, connected: bool, force: bool = False) -> None:
         """출구 LPR(DEV-LPR-2, udp_port=7090) 장비의 is_connected 플래그를 갱신.
         device_clients.devices_ids 에 있는 장비만 갱신한다.
@@ -728,7 +751,7 @@ class TransmissionManager:
                 guid = (d.get("device_guid") or "").strip()
 
                 udp_port = None
-                cfg = d.get("extra_config")
+                cfg = d.get("config")
                 if isinstance(cfg, str):
                     try:
                         cfg_obj = json.loads(cfg)

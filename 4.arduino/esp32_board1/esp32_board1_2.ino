@@ -9,6 +9,7 @@
  #include <SparkFun_APDS9960.h>
  #include <WiFi.h>
  #include <LiquidCrystal.h>
+ #include <ESP32Servo.h>
  
  // [설정] 네트워크 환경 (esp32_board1_1 과 동일 구조)
  #if 1
@@ -35,6 +36,8 @@
  #define TYPE_IR_EVENT      0
  #define TYPE_DEVICE_LIST   4
  #define TYPE_DEV_REGISTER  6
+ #define TYPE_CMD_OPEN      2
+ #define TYPE_CMD_CLOSE     5
  #define TYPE_CMD_DISPLAY   7   // 서버 → 클라이언트: LCD 2줄 출력
  
  #define EV_EXIT            2
@@ -51,6 +54,12 @@
  UnifiedPacket rxPkt;
  
  SparkFun_APDS9960 apds = SparkFun_APDS9960();
+ 
+ Servo myServo;
+ 
+ bool isGateOpen = false;
+ #define EV_GATE_OPEN       4
+ #define EV_GATE_CLOSED     5
  
  // LCD: RS(13), E(23), D4(19), D5(18), D6(17), D7(16)
  LiquidCrystal lcd(13, 23, 19, 18, 17, 16);
@@ -125,6 +134,30 @@
      client.write((uint8_t*)&txPkt, sizeof(UnifiedPacket));
  }
  
+ void openGate(const char* source) {
+     if (isGateOpen) {
+         sendEvent(EV_GATE_OPEN, source, "ALREADY_OPEN");
+         return;
+     }
+     myServo.write(90);
+     delay(200);
+     isGateOpen = true;
+     sendEvent(EV_GATE_OPEN, source, "ACK_OK");
+     Serial.println("ACTION: GATE_OPEN BY " + String(source));
+ }
+ 
+ void closeGate(const char* source) {
+     if (!isGateOpen) {
+         sendEvent(EV_GATE_CLOSED, source, "ALREADY_CLOSED");
+         return;
+     }
+     myServo.write(0);
+     delay(200);
+     isGateOpen = false;
+     sendEvent(EV_GATE_CLOSED, source, "ACK_OK");
+     Serial.println("ACTION: GATE_CLOSED BY " + String(source));
+ }
+ 
  void setup() {
      Serial.begin(115200);
      //delay(3000);
@@ -173,6 +206,10 @@
      }
  
      lcd.begin(16, 2);
+     
+     myServo.setPeriodHertz(50);
+     myServo.attach(25, 500, 2400); // 보드2용 서보 핀 (서보 배선에 따라 다를 수 있음)
+     myServo.write(0);
      //updateDisplay("HW CHECKING...", "PLEASE WATCH SER");
  
  
@@ -267,6 +304,10 @@
              memcpy(line1, &rxPkt.payload[0], 16);
              memcpy(line2, &rxPkt.payload[16], 16);
              updateDisplay(line1, line2);
+         } else if (rxPkt.type == TYPE_CMD_OPEN) {
+             openGate("SERVER");
+         } else if (rxPkt.type == TYPE_CMD_CLOSE) {
+             closeGate("SERVER");
          }
      }
  
@@ -281,31 +322,32 @@
          }
      }
  
-     // 차량/근접 감지 (출구): board1_1 과 동일 조건 (조도 <= LIGHT_THRESHOLD, 0 초과)
-     static bool isCooldown = false;
-     static unsigned long cooldownStart = 0;
- 
-     if (isCooldown) {
-         if (millis() - cooldownStart >= 5000) {
-             isCooldown = false;
-             updateDisplay("SERVER OK", "READY!");
-             lastDetectionTime = millis();
-         }
-     } else {
-         if (sensor_ok && millis() - lastDetectionTime > 200) {
-             uint16_t lightVal = 0;
-             if (apds.readAmbientLight(lightVal)) {
-                 if (lightVal > 0 && lightVal <= LIGHT_THRESHOLD) {
-                     Serial.printf("[EXIT] DETECTED light=%u\n", (unsigned)lightVal);
-                     sendEvent(EV_EXIT, "ESP32-S2-EXIT01", "DETECTED");
-                     updateDisplay("CAR EXITS NOW", "THANK YOU!");
-                     isCooldown = true;
-                     cooldownStart = millis();
-                     lastDetectionTime = millis();
-                 }
-             }
-         }
-     }
+     static bool sensor_was_detected = false;
+    if (sensor_ok && (millis() - lastDetectionTime > 150)) {
+        uint16_t lightVal = 0;
+        bool sensor_now_detected = false;
+        
+        if (apds.readAmbientLight(lightVal)) {
+            if (lightVal > 0 && lightVal <= LIGHT_THRESHOLD) {
+                sensor_now_detected = true;
+            }
+
+            if (sensor_now_detected && !sensor_was_detected) {
+                // 막힘 (새로운 감지)
+                Serial.printf("[EXIT] DETECTED light=%u\n", (unsigned)lightVal);
+                sendEvent(EV_EXIT, "ESP32-S2-EXIT01", "DETECTED");
+                updateDisplay("CAR EXITS NOW", "THANK YOU!");
+                sensor_was_detected = true;
+            } 
+            else if (!sensor_now_detected && sensor_was_detected) {
+                // 해제 (차량 통과 완료)
+                Serial.printf("[EXIT] CLEAR light=%u\n", (unsigned)lightVal);
+                sendEvent(EV_EXIT, "ESP32-S2-EXIT01", "CLEAR");
+                updateDisplay("SERVER OK", "READY!");
+                sensor_was_detected = false;
+            }
+        }
+        lastDetectionTime = millis();
+    }
      delay(50);
  }
- 

@@ -67,6 +67,10 @@ class LprRecognitionWorker(QObject):
 
     result_ready = pyqtSignal(str)  # 한 줄 결과 예: "2025-03-03 12:00:00 | 12가 3456"
 
+    # 클래스 레벨에서 모델 공유 (메모리 부족 방지)
+    _shared_models: dict[str, Any] = {}
+    _shared_lock = threading.Lock()
+
     def __init__(
         self,
         model_path: str,
@@ -84,8 +88,6 @@ class LprRecognitionWorker(QObject):
         self._pending_frame: Optional[Any] = None
         self._lock = threading.Lock()
         self._running = True
-        self._plate_model = None
-        self._ocr = None
         self._loaded = False
         self._load_error: Optional[str] = None
 
@@ -93,25 +95,42 @@ class LprRecognitionWorker(QObject):
         return _CV2_AVAILABLE and _YOLO_AVAILABLE and _PADDLE_AVAILABLE
 
     def load_models(self) -> bool:
-        """첫 프레임 전에 호출하거나 run() 내부에서 lazy load."""
+        """첫 프레임 전에 호출하거나 run_loop() 내부에서 lazy load."""
         if self._loaded:
             return True
         if not self.is_available():
             self._load_error = "ultralytics 또는 paddleocr 미설치"
             return False
-        try:
-            model_path = str(Path(self._model_path).resolve())
-            self._plate_model = YOLO(model_path)
-            self._ocr = PaddleOCR(
-                lang="korean",
-                use_textline_orientation=True,
-                enable_mkldnn=False,
-            )
-            self._loaded = True
-            return True
-        except Exception as e:
-            self._load_error = str(e)
-            return False
+            
+        with self._shared_lock:
+            try:
+                model_key = str(Path(self._model_path).resolve())
+                
+                # YOLO 공유 로드
+                if "yolo" not in self._shared_models:
+                    self._shared_models["yolo"] = YOLO(model_key)
+                
+                # PaddleOCR 공유 로드
+                if "ocr" not in self._shared_models:
+                    self._shared_models["ocr"] = PaddleOCR(
+                        lang="korean",
+                        use_textline_orientation=True,
+                        enable_mkldnn=False,
+                    )
+                
+                self._loaded = True
+                return True
+            except Exception as e:
+                self._load_error = str(e)
+                return False
+
+    @property
+    def _plate_model(self):
+        return self._shared_models.get("yolo")
+
+    @property
+    def _ocr(self):
+        return self._shared_models.get("ocr")
 
     def submit_frame(self, frame: Any) -> None:
         """UI 스레드에서 호출. 복사본을 넘기면 됨. 블로킹 없음."""
@@ -157,7 +176,8 @@ class LprRecognitionWorker(QObject):
 
             # YOLO (동일 스레드에서 실행, 프레임은 이미 복사본)
             try:
-                results = self._plate_model(frame, conf=self._plate_conf, verbose=False)
+                with self._shared_lock:
+                    results = self._plate_model(frame, conf=self._plate_conf, verbose=False)
                 boxes = results[0].boxes.xyxy.cpu().numpy() if len(results) > 0 and results[0].boxes is not None else []
             except Exception:
                 boxes = []
@@ -191,7 +211,8 @@ class LprRecognitionWorker(QObject):
                     last_trigger_time = current_time
                     plate_stability_counter = 0
                     try:
-                        ocr_results = self._ocr.ocr(scaled)
+                        with self._shared_lock:
+                            ocr_results = self._ocr.ocr(scaled)
                         final_text = _extract_plate_text_from_ocr_result(ocr_results)
                         last_ocr_text = final_text
                         if len(final_text) >= 5:

@@ -174,13 +174,26 @@ void loop() {
     }
 
     // Detection
-    if (sensor_ok && millis() - lastDetectionTime > DETECTION_DELAY) {
+    static bool isCarDetected = false;
+    
+    if (sensor_ok && millis() - lastDetectionTime > 200) {
         uint8_t prox = 0;
-        if (apds.readProximity(prox) && prox >= PROXIMITY_THRESHOLD) {
-            sendEvent(EV_ENTRY, "ESP32-S1-ENTRY01", "DETECTED");
-            lastDetectionTime = millis();
+        if (apds.readProximity(prox)) {
+            if (prox >= PROXIMITY_THRESHOLD) {
+                if (!isCarDetected) {
+                    isCarDetected = true;
+                    sendEvent(EV_ENTRY, "ESP32-S1-ENTRY01", "DETECTED");
+                }
+            } else if (prox < PROXIMITY_THRESHOLD - 10) {
+                if (isCarDetected) {
+                    isCarDetected = false;
+                    sendEvent(EV_ENTRY, "ESP32-S1-ENTRY01", "CLEAR");
+                }
+            }
         }
+        lastDetectionTime = millis();
     }
+
 
     // RFID
     if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {

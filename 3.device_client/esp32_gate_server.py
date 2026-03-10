@@ -71,6 +71,7 @@ class Esp32GateServer(threading.Thread):
         on_parking_event: Optional[Callable[[str, bool], None]] = None,
         on_gate_motor_event: Optional[Callable[[str, str, str], None]] = None,
         on_gate_event: Optional[Callable[[int, str, str], None]] = None,
+        on_rfid: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__(daemon=True)
         self._host = host
@@ -196,11 +197,11 @@ class Esp32GateServer(threading.Thread):
                 }
             return dict(self._pending_result)
 
-    def send_open_gate(self, wait_result_sec: float = 3.0) -> Dict[str, Any]:
-        return self._send_gate_command(TYPE_CMD_OPEN, "OPEN", wait_result_sec)
+    def send_open_gate(self, wait_result_sec: float = 3.0, target_guid: str = ENTRY_GATE_GUID) -> Dict[str, Any]:
+        return self._send_gate_command(TYPE_CMD_OPEN, "OPEN", wait_result_sec, target_guid)
 
-    def send_close_gate(self, wait_result_sec: float = 3.0) -> Dict[str, Any]:
-        return self._send_gate_command(TYPE_CMD_CLOSE, "CLOSE", wait_result_sec)
+    def send_close_gate(self, wait_result_sec: float = 3.0, target_guid: str = ENTRY_GATE_GUID) -> Dict[str, Any]:
+        return self._send_gate_command(TYPE_CMD_CLOSE, "CLOSE", wait_result_sec, target_guid)
 
     def get_gate_motor_status(self) -> Dict[str, Any]:
         with self._gate_state_lock:
@@ -256,10 +257,12 @@ class Esp32GateServer(threading.Thread):
         finally:
             with self._clients_lock:
                 guid = self._client_guids.get(addr)
+                print(f"[DEBUG-CONN-TERM] ESP32 보드 연결 해제 (addr={addr}, guid={guid!r})")
                 self._clients.pop(addr, None)
                 self._client_guids.pop(addr, None)
                 self._current_ip = next(iter(self._clients))[0] if self._clients else None
             try:
+                self._on_state_change(addr[0], False, guid)
                 conn.close()
             except Exception:
                 pass
@@ -278,6 +281,7 @@ class Esp32GateServer(threading.Thread):
                 try:
                     server.settimeout(1.0)
                     conn, addr = server.accept()
+                    print(f"[TCP-DEBUG] Accepted connection from {addr}")
                 except socket.timeout:
                     continue
                 t = threading.Thread(target=self._serve_client, args=(conn, addr), daemon=True)
@@ -385,6 +389,8 @@ class Esp32GateServer(threading.Thread):
                     uid = payload[1:17].decode("utf-8", errors="ignore").strip("\x00 ")
                     siteid = payload[17:32].decode("utf-8", errors="ignore").strip("\x00 ")
                     self._on_log(f"[RFID] mode={mode} UID={uid} SiteID={siteid}")
+                    if self.on_rfid:
+                        self.on_rfid(uid)
                     continue
 
                 # 4. 장비 목록 (연결별 버퍼 사용)

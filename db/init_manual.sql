@@ -12,6 +12,7 @@ DROP TABLE IF EXISTS rfid_cards;
 DROP TABLE IF EXISTS residents;
 DROP TABLE IF EXISTS parking_slots;
 DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS parking_records;
 
 -- 3. 새 테이블 생성
 
@@ -121,6 +122,19 @@ CREATE TABLE event_logs (
     FOREIGN KEY (device_id) REFERENCES devices(id)
     ON DELETE SET NULL
     ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 주차 이용 기록 테이블 (고트래픽 대응)
+CREATE TABLE parking_records (
+    record_id      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    license_plate  VARCHAR(15)  NOT NULL,
+    entry_timestamp DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    exit_timestamp DATETIME(3)  NULL,
+    is_registered  TINYINT(1)   NOT NULL DEFAULT 0,
+    charge_amount  INT          DEFAULT 0,
+    
+    INDEX idx_active_vehicle (license_plate, exit_timestamp),
+    INDEX idx_entry_time (entry_timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. 초기 데이터(장비 + 슬롯) 삽입

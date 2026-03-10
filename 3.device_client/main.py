@@ -7,6 +7,8 @@ from device_manager import DeviceManager
 from architect_manager import ArchitectManager
 from transmission_manager import TransmissionManager
 from main_window import MainWindow
+import threading
+import lpr_recognition_worker
 
 
 def run_empty_device_client() -> None:
@@ -42,6 +44,14 @@ def run_empty_device_client() -> None:
 
     # 장치 매니저 시작(현재는 뼈대만 존재)
     dev_mgr.start()
+
+    # OCR 모델을 백그라운드에서 미리 로드하여 첫 팝업 딜레이 방지
+    try:
+        from lpr_recognition_worker import LprRecognitionWorker
+        t_preload = threading.Thread(target=LprRecognitionWorker.preload_models, daemon=True)
+        t_preload.start()
+    except Exception as e:
+        print(f"Failed to start OCR Preload: {e}")
 
     win = MainWindow(
         info_manager=info_mgr,

@@ -256,28 +256,28 @@ void loop() {
     }
 
     // Detection (Check every 200ms)
-    static bool isCooldown = false;
-    static unsigned long cooldownStart = 0;
+    static bool isCarDetected = false;
 
-    if (isCooldown) {
-        if (millis() - cooldownStart >= 5000) {
-            isCooldown = false;
-            updateDisplay("SERVER OK", "READY!");
-            lastDetectionTime = millis();
-        }
-    } else {
-        if (sensor_ok && millis() - lastDetectionTime > 200) {
-            uint16_t lightVal = 0;
-            if (apds.readAmbientLight(lightVal)) {
-                // Car detection: Light level drops when shadowed
-                if (lightVal > 0 && lightVal < 15) { 
+    if (sensor_ok && millis() - lastDetectionTime > 200) {
+        uint16_t lightVal = 0;
+        if (apds.readAmbientLight(lightVal)) {
+            // Car detection: Light level drops when shadowed
+            if (lightVal > 0 && lightVal < 15) { 
+                if (!isCarDetected) {
+                    isCarDetected = true;
                     sendEvent(EV_EXIT, "ESP32-S2-EXIT01", "DETECTED");
                     updateDisplay("CAR EXITS NOW", "THANK YOU!");
-                    isCooldown = true;
-                    cooldownStart = millis();
+                }
+            } else {
+                if (isCarDetected) {
+                    isCarDetected = false;
+                    sendEvent(EV_EXIT, "ESP32-S2-EXIT01", "CLEAR");
+                    updateDisplay("SERVER OK", "READY!");
                 }
             }
         }
+        lastDetectionTime = millis();
     }
     delay(50); 
 }
+

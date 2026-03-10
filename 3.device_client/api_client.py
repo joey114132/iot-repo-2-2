@@ -101,9 +101,53 @@ class DeviceApiClient:
         # TODO: 필요 시 /events API 추가
         print(f"[EVENT] {event_type}: {message}")
 
+    def record_entry(self, license_plate: str) -> Dict[str, Any]:
+        """차량 입차 기록 요청"""
+        resp = self._client.post("/parking/events/entry", json={"license_plate": license_plate})
+        resp.raise_for_status()
+        return resp.json()
+
+    def record_exit(self, license_plate: str, ext_rfid_registered: bool = False) -> Dict[str, Any]:
+        """차량 출차 기록 요청 (요금 계산 포함)"""
+        resp = self._client.post(
+            "/parking/events/exit",
+            json={"license_plate": license_plate, "ext_rfid_registered": ext_rfid_registered}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def clear_payment(self, license_plate: str, amount_paid: int) -> Dict[str, Any]:
+        """요금 결제 완료 처리"""
+        resp = self._client.post(
+            "/parking/events/payment_cleared",
+            json={"license_plate": license_plate, "amount_paid": amount_paid}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ─── devices / device_clients 연동 ─────────────────────────
     def list_device_clients(self) -> list[dict[str, Any]]:
         resp = self._client.get("/device-clients/")
+        resp.raise_for_status()
+        return resp.json()
+
+    # ─── residents / rfid 연동 ──────────────────────────────
+    def create_resident(self, resident_data: dict[str, Any]) -> dict[str, Any]:
+        resp = self._client.post("/residents/", json=resident_data)
+        resp.raise_for_status()
+        return resp.json()
+
+    def register_rfid_card(self, resident_id: int, card_uid: str, description: str = "") -> dict[str, Any]:
+        resp = self._client.post("/residents/rfid", json={
+            "card_uid": card_uid,
+            "resident_id": resident_id,
+            "description": description
+        })
+        resp.raise_for_status()
+        return resp.json()
+
+    def add_resident_balance(self, resident_id: int, amount: int) -> dict[str, Any]:
+        resp = self._client.post(f"/parking/residents/{resident_id}/add_balance", json={"amount": amount})
         resp.raise_for_status()
         return resp.json()
 

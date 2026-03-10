@@ -178,3 +178,149 @@ def dashboard_summary(db: Session = Depends(get_db)):
         slots=slots,
     )
 
+
+import math
+from datetime import datetime
+from pydantic import BaseModel
+
+class EntryEvent(BaseModel):
+    license_plate: str
+
+class ExitEvent(BaseModel):
+    license_plate: str
+    ext_rfid_registered: bool = False
+
+class PaymentEvent(BaseModel):
+    license_plate: str
+    amount_paid: int
+
+
+@router.post("/events/entry")
+def handle_entry(event: EntryEvent, db: Session = Depends(get_db)):
+    entry_time = datetime.utcnow()
+    resident = db.query(models.Resident).filter(models.Resident.car_plate == event.license_plate).first()
+    is_reg = bool(resident)
+
+    record = models.ParkingRecord(
+        license_plate=event.license_plate,
+        entry_timestamp=entry_time,
+        is_registered=is_reg
+    )
+    db.add(record)
+    db.commit()
+
+    global GATE_AUTO_STATE
+    GATE_AUTO_STATE = 1
+    set_env_value("GATE_AUTO_STATE", "1")
+
+    return {"ok": True, "message": f"Vehicle {event.license_plate} entered.", "gate": "open"}
+
+
+@router.post("/events/exit")
+def handle_exit(event: ExitEvent, db: Session = Depends(get_db)):
+    record = db.query(models.ParkingRecord).filter(
+        models.ParkingRecord.license_plate == event.license_plate,
+        models.ParkingRecord.exit_timestamp.is_(None)
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="Active parking record not found")
+
+    global GATE_AUTO_STATE
+
+    if event.ext_rfid_registered or record.is_registered:
+        # Fetch the resident to check and deduct balance
+        resident = db.query(models.Resident).filter(models.Resident.car_plate == record.license_plate).first()
+        if resident:
+            FEE_PER_INC = 500
+            MIN_PER_INC = 10
+            exit_time = datetime.utcnow()
+            duration = exit_time - record.entry_timestamp
+            duration_minutes = duration.total_seconds() / 60.0
+            
+            GRACE_PERIOD = 5
+            if duration_minutes <= GRACE_PERIOD:
+                total_fee = 0
+            else:
+                increments = math.ceil(duration_minutes / MIN_PER_INC)
+                total_fee = increments * FEE_PER_INC
+
+            if resident.balance >= total_fee:
+                resident.balance -= total_fee
+                record.exit_timestamp = exit_time
+                record.charge_amount = 0  # Paid from balance
+                db.commit()
+                GATE_AUTO_STATE = 1
+                set_env_value("GATE_AUTO_STATE", "1")
+                return {"ok": True, "message": f"Registered vehicle. Paid {total_fee} from balance. Gate opening.", "charge": 0}
+            else:
+                # Not enough balance, fall through to normal parking flow
+                record.charge_amount = total_fee
+                db.commit()
+                return {"ok": False, "message": "Fee required. Insufficient resident balance. Gate closed.", "charge": total_fee}
+        else:
+            # Fallback if resident somehow not found despite is_registered
+            record.exit_timestamp = datetime.utcnow()
+            record.charge_amount = 0
+            db.commit()
+            GATE_AUTO_STATE = 1
+            set_env_value("GATE_AUTO_STATE", "1")
+            return {"ok": True, "message": "Registered vehicle. Gate opening.", "charge": 0}
+
+    exit_time = datetime.utcnow()
+    duration = exit_time - record.entry_timestamp
+    duration_minutes = duration.total_seconds() / 60.0
+
+    GRACE_PERIOD = 5
+    if duration_minutes <= GRACE_PERIOD:
+        record.exit_timestamp = exit_time
+        record.charge_amount = 0
+        db.commit()
+        GATE_AUTO_STATE = 1
+        set_env_value("GATE_AUTO_STATE", "1")
+        return {"ok": True, "message": "Under grace period. Gate opening.", "charge": 0}
+
+    FEE_PER_INC = 500
+    MIN_PER_INC = 10
+    increments = math.ceil(duration_minutes / MIN_PER_INC)
+    total_fee = increments * FEE_PER_INC
+
+    record.charge_amount = total_fee
+    db.commit()
+    return {"ok": True, "message": "Fee required. Gate closed.", "charge": total_fee}
+
+
+@router.post("/events/payment_cleared")
+def handle_payment(event: PaymentEvent, db: Session = Depends(get_db)):
+    record = db.query(models.ParkingRecord).filter(
+        models.ParkingRecord.license_plate == event.license_plate,
+        models.ParkingRecord.exit_timestamp.is_(None)
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="Active parking record not found")
+
+    global GATE_AUTO_STATE
+    if event.amount_paid >= record.charge_amount:
+        record.exit_timestamp = datetime.utcnow()
+        db.commit()
+        GATE_AUTO_STATE = 1
+        set_env_value("GATE_AUTO_STATE", "1")
+        return {"ok": True, "message": "Payment cleared. Gate opening."}
+
+    return {"ok": False, "message": "Insufficient payment", "owed": record.charge_amount}
+
+
+class BalanceUpdate(BaseModel):
+    amount: int
+
+@router.post("/residents/{resident_id}/add_balance")
+def add_resident_balance(resident_id: int, payload: BalanceUpdate, db: Session = Depends(get_db)):
+    resident = db.query(models.Resident).filter(models.Resident.id == resident_id).first()
+    if not resident:
+        raise HTTPException(status_code=404, detail="Resident not found")
+    
+    resident.balance += payload.amount
+    db.commit()
+    db.refresh(resident)
+    return {"ok": True, "message": f"Added {payload.amount} balance", "new_balance": resident.balance}

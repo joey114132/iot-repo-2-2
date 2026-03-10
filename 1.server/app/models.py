@@ -75,6 +75,7 @@ class Resident(Base):
     name = Column(String(50), nullable=False)
     phone = Column(String(20), nullable=False)
     car_plate = Column(String(20), nullable=False)
+    balance = Column(Integer, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(
@@ -141,3 +142,12 @@ class DeviceClient(Base):
     )
 
 
+class ParkingRecord(Base):
+    __tablename__ = "parking_records"
+
+    record_id = Column(Integer, primary_key=True, autoincrement=True)
+    license_plate = Column(String(15), nullable=False)
+    entry_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    exit_timestamp = Column(DateTime, nullable=True)
+    is_registered = Column(Boolean, default=False, nullable=False)
+    charge_amount = Column(Integer, default=0)
