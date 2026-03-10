@@ -156,6 +156,12 @@ class MainWindow(QMainWindow):
         # 초기 한 번 불러오기
         self.refresh_from_server()
 
+        # ───────── LPR 카메라 자동 팝업 ─────────
+        # 메인 프로그램 기동 시, 입구/출구 LPR 테스트 창을 자동으로 열어
+        # APDS 감지 이벤트가 발생했을 때 곧바로 OCR 이 동작하도록 한다.
+        self.open_lpr_enter_test_dialog()
+        self.open_lpr_exit_test_dialog()
+
     # ───────── 데이터 로드 및 UI 반영 ─────────
     def refresh_from_server(self) -> None:
         try:

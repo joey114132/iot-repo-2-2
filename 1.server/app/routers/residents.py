@@ -136,3 +136,28 @@ def delete_rfid_card(card_id: int, db: Session = Depends(get_db)):
     db.commit()
     return None
 
+
+@router.get("/rfid/by-uid/{card_uid}", response_model=schemas.ResidentRead)
+def get_resident_by_card_uid(card_uid: str, db: Session = Depends(get_db)):
+    """
+    RFID 카드 UID 로 연결된 입주민 정보를 조회한다.
+    - 카드가 없거나 resident_id 가 비어 있으면 404 반환.
+    """
+    card = (
+        db.query(models.RfidCard)
+        .filter(models.RfidCard.card_uid == card_uid)
+        .first()
+    )
+    if not card or not card.resident_id:
+        raise HTTPException(status_code=404, detail="Resident not found for this card UID")
+
+    resident = (
+        db.query(models.Resident)
+        .filter(models.Resident.id == card.resident_id)
+        .first()
+    )
+    if not resident:
+        raise HTTPException(status_code=404, detail="Resident not found")
+
+    return resident
+

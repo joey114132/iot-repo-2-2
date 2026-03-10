@@ -1,15 +1,24 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFormLayout, QGroupBox, QMessageBox
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFormLayout,
+    QGroupBox,
+    QMessageBox,
 )
 from PyQt6.QtCore import pyqtSlot, Qt
 import logging
+
 
 class RfidManagementTab(QWidget):
     def __init__(self, api_client):
         super().__init__()
         self._api = api_client
         self._last_uid = ""
+        self.last_registered_resident_id = None
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -66,12 +75,32 @@ class RfidManagementTab(QWidget):
 
         layout.addStretch()
 
-        self.last_registered_resident_id = None
-
     @pyqtSlot(str)
     def on_rfid_scanned(self, uid: str) -> None:
         self._last_uid = uid
         self.lbl_scanned_uid.setText(f"마지막 스캔 카드: {self._last_uid}")
+
+        # 이미 등록된 카드라면 해당 입주민 정보를 불러와서
+        # 잔액 충전/정보 수정에 바로 사용할 수 있도록 폼을 채운다.
+        try:
+            resident = self._api.find_resident_by_rfid(uid)
+        except Exception as e:  # 카드가 없거나 서버 오류
+            logging.info("RFID 조회 실패 또는 미등록 카드: %s", e)
+            # 미등록 카드인 경우에는 신규 등록 폼을 유지하고 ID 는 초기화
+            self.last_registered_resident_id = None
+            return
+
+        self.last_registered_resident_id = resident.get("id")
+        self.edit_unit.setText(resident.get("unit_number", ""))
+        self.edit_name.setText(resident.get("name", ""))
+        self.edit_phone.setText(resident.get("phone", ""))
+        self.edit_plate.setText(resident.get("car_plate", ""))
+        self.edit_balance.setText(str(resident.get("balance", 0)))
+        QMessageBox.information(
+            self,
+            "입주민 조회",
+            f"등록된 입주민을 불러왔습니다.\n이름: {resident.get('name', '')}\n현재 잔액: {resident.get('balance', 0)}원",
+        )
 
     def _on_register_clicked(self) -> None:
         if not self._last_uid:

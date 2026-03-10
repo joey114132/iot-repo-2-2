@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
+from config import settings
 
 # 선택 의존: 없으면 인식 비활성화
 try:
@@ -90,6 +91,23 @@ class LprRecognitionWorker(QObject):
         self._running = True
         self._loaded = False
         self._load_error: Optional[str] = None
+
+    @classmethod
+    def preload_models(cls) -> None:
+        """
+        백그라운드에서 YOLO + OCR 모델을 미리 로드하여
+        첫 LPR 팝업 호출 시 지연을 최소화한다.
+        """
+        try:
+            worker = cls(settings.lpr_plate_model_path)
+            if not worker.is_available():
+                print("[LPR] Preload skipped: YOLO / PaddleOCR not available.")
+                return
+            ok = worker.load_models()
+            if not ok:
+                print(f"[LPR] Preload failed: {worker._load_error}")
+        except Exception as e:
+            print(f"[LPR] Exception during preload: {e}")
 
     def is_available(self) -> bool:
         return _CV2_AVAILABLE and _YOLO_AVAILABLE and _PADDLE_AVAILABLE

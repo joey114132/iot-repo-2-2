@@ -8,7 +8,6 @@ from architect_manager import ArchitectManager
 from transmission_manager import TransmissionManager
 from main_window import MainWindow
 import threading
-import lpr_recognition_worker
 
 
 def run_empty_device_client() -> None:
@@ -47,8 +46,12 @@ def run_empty_device_client() -> None:
 
     # OCR 모델을 백그라운드에서 미리 로드하여 첫 팝업 딜레이 방지
     try:
-        from lpr_recognition_worker import LprRecognitionWorker
-        t_preload = threading.Thread(target=LprRecognitionWorker.preload_models, daemon=True)
+        from lpr_detector import LprRecognitionWorker
+
+        t_preload = threading.Thread(
+            target=LprRecognitionWorker.preload_models,
+            daemon=True,
+        )
         t_preload.start()
     except Exception as e:
         print(f"Failed to start OCR Preload: {e}")

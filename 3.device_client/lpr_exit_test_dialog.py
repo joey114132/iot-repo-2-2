@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QTextEdit,
     QPushButton,
+    QHBoxLayout,
+    QLineEdit,
 )
 
 from config import settings
@@ -60,15 +62,23 @@ class LprExitTestDialog(QDialog):
         self.result_edit.setPlaceholderText("인식된 번호가 여기 표시됩니다. (YOLO+PaddleOCR)")
         layout.addWidget(self.result_edit)
 
+        # 결제 금액 입력 + 결제 버튼
+        pay_row = QHBoxLayout()
+        self.label_pay = QLabel("결제 금액:")
+        self.edit_payment_amount = QLineEdit("0")
         self.btn_pay = QPushButton("시뮬레이션: 요금 결제 완료")
         self.btn_pay.clicked.connect(self._on_simulate_payment)
-        layout.addWidget(self.btn_pay)
+        pay_row.addWidget(self.label_pay)
+        pay_row.addWidget(self.edit_payment_amount)
+        pay_row.addWidget(self.btn_pay)
+        layout.addLayout(pay_row)
 
         self.btn_manual = QPushButton("수동 감지 시작 (3초간 OCR 활성화)")
         self.btn_manual.clicked.connect(self._on_manual_trigger)
         layout.addWidget(self.btn_manual)
 
         self._last_plate: str | None = None
+        self._last_charge: int = 0
 
         self._last_frame: Optional[np.ndarray] = None
         self._refresh_count = 0
@@ -107,8 +117,11 @@ class LprExitTestDialog(QDialog):
                 try:
                     res = self._tx.record_exit(plate)
                     msg = res.get("message", "")
-                    charge = res.get("charge", 0)
+                    charge = int(res.get("charge", 0) or 0)
                     self._last_plate = plate
+                    self._last_charge = charge
+                    # 결제 UI에 기본값으로 청구 금액을 채워준다.
+                    self.edit_payment_amount.setText(str(charge))
                     self.result_edit.append(f"📡 [SERVER-EXIT] {msg} (Charge: {charge} won)")
                     if charge == 0:
                         self.result_edit.append("🔓 [HARDWARE] Exit Gate Triggered (OPEN)")
@@ -175,8 +188,13 @@ class LprExitTestDialog(QDialog):
             return
         
         try:
-            # 시뮬레이션: 전액 결제 (10000원 정도면 충분할 듯)
-            res = self._tx._api.clear_payment(self._last_plate, 10000)
+            amt_str = self.edit_payment_amount.text().strip()
+            amount = int(amt_str) if amt_str else self._last_charge
+            if amount <= 0:
+                self.result_edit.append("⚠ 결제 금액이 0원입니다.")
+                return
+
+            res = self._tx._api.clear_payment(self._last_plate, amount)
             msg = res.get("message", "")
             self.result_edit.append(f"💰 [PAYMENT] {msg}")
             if res.get("ok"):

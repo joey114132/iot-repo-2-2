@@ -680,8 +680,12 @@ class TransmissionManager:
         if self._lpr_connected == connected and not force:
             return
         self._lpr_connected = connected
-
-        devices = self._api.list_devices()
+        try:
+            devices = self._api.list_devices()
+        except Exception as e:
+            # 서버가 내려가 있거나 초기 기동 전이면 연결 동기화는 건너뛴다.
+            print(f"[LPR] skip updating entry LPR is_connected (server unreachable: {e})")
+            return
         managed = self._managed_device_ids()
         changed = False
 
@@ -740,8 +744,11 @@ class TransmissionManager:
         if self._lpr_exit_connected == connected and not force:
             return
         self._lpr_exit_connected = connected
-
-        devices: List[Dict[str, Any]] = self._api.list_devices()
+        try:
+            devices: List[Dict[str, Any]] = self._api.list_devices()
+        except Exception as e:
+            print(f"[LPR] skip updating exit LPR is_connected (server unreachable: {e})")
+            return
         managed = self._managed_device_ids()
         changed = False
         for d in devices:

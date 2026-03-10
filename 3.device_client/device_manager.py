@@ -198,6 +198,14 @@ class DeviceManager:
                 f"[PARKING] DB 슬롯 갱신 실패 slot={slot_name} ({exc})"
             )
 
+    def _on_gate_rfid(self, uid: str) -> None:
+        """
+        ESP32 보드에서 RFID UID 를 수신했을 때 호출되는 콜백.
+        외부(UI)에서 on_rfid_scan 이 설정되어 있으면 그대로 전달한다.
+        """
+        if callable(self.on_rfid_scan):
+            self.on_rfid_scan(uid)
+
     def get_gate_logs(self) -> list[str]:
         return list(self._gate_logs)
 

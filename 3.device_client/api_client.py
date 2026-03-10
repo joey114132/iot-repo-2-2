@@ -151,6 +151,14 @@ class DeviceApiClient:
         resp.raise_for_status()
         return resp.json()
 
+    def find_resident_by_rfid(self, card_uid: str) -> dict[str, Any]:
+        """
+        RFID 카드 UID 로 입주민 정보를 조회.
+        """
+        resp = self._client.get(f"/residents/rfid/by-uid/{card_uid}")
+        resp.raise_for_status()
+        return resp.json()
+
     def list_devices(self) -> list[dict[str, Any]]:
         resp = self._client.get("/devices/")
         resp.raise_for_status()
