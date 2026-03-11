@@ -31,14 +31,10 @@ class DeviceManager:
         self._gate_logs: list[str] = []
         self._gate_devices: list[dict] = []
         self._gate_connected_ips: set[str] = set()  # 연결된 보드 IP 목록
-        self._gate_motor_status: dict[str, object] = {
-            "state": "UNKNOWN",
-            "source": "",
-            "detail": "",
-            "updated_at": 0.0,
-        }
+        # GUID별 모터 상태 관리를 위해 딕셔너리로 변경
+        self._gate_motor_status: dict[str, dict[str, object]] = {}
         self._last_exit_lcd_signature: tuple[bool, int, int, int, str] | None = None
-        self._last_manual_gate_cmd_at: float = 0.0
+        self._last_manual_gate_cmd_at: dict[str, float] = {}
         # parking_slots, device 등록 정보 등을 위한 내부 상태
         self._parking_state: dict[str, bool] = {}
 
@@ -49,8 +45,8 @@ class DeviceManager:
             ENTRY_GATE_GUID: False,
             "DEV-GATE-2": False,
         }
-        # 센서 트리거 게이트 닫기 후 sync 루프가 다시 열지 않도록 하는 타임스탬프
-        self._sensor_close_until: float = 0.0
+        # GUID별 게이트 닫기 대기 시간 관리
+        self._sensor_close_until: dict[str, float] = {}
         # 백그라운드 OCR 워커 대신 다이얼로그 팝업 콜백 사용
         self.on_lpr_popup = None  # Callable[[bool, bool], None] (is_exit, show)
         # RFID 스캔 이벤트 콜백
@@ -213,7 +209,8 @@ class DeviceManager:
         return list(self._gate_devices)
 
     def _on_gate_motor_event(self, state: str, src: str, detail: str) -> None:
-        self._gate_motor_status = {
+        # src 가 보통 GUID(DEV-GATE-1 등)이므로 이를 키로 사용
+        self._gate_motor_status[src] = {
             "state": state,
             "source": src,
             "detail": detail,
@@ -239,10 +236,10 @@ class DeviceManager:
                 self._entry_sensor_blocked = True
 
             # 센서가 감지되는 동안: sync 루프가 게이트를 닫지 못하도록 매우 긴 시간 잠금
-            self._sensor_close_until = time.time() + 9999.0
+            self._sensor_close_until[target_guid] = time.time() + 9999.0
             self._gate_opened_by_sensor[target_guid] = True
 
-            motor_status = self.get_gate_motor_status()
+            motor_status = self.get_gate_motor_status(target_guid=target_guid)
             current_state = str(motor_status.get("state", "UNKNOWN")).upper()
             self._append_gate_log(f"[GATE-LOG] {src} 감지 -> LPR OCR 트리거 (motor={current_state})")
 
@@ -278,28 +275,46 @@ class DeviceManager:
                     return
                 self._append_gate_log(f"[GATE-LOG] {s} 5초 경과 → 게이트 자동 닫기")
                 self.close_gate(target_guid=guid)
-                self._sensor_close_until = time.time() + 10.0  # 닫은 후 10초 추가 잠금
+                self._sensor_close_until[guid] = time.time() + 10.0  # 닫은 후 10초 추가 잠금
                 self._tx.set_gate_state(gate_sensor_state=1)
                 self._tx.set_gate_auto_state(2)
                 self._gate_opened_by_sensor[guid] = False
 
             threading.Thread(target=_delayed_close, daemon=True).start()
 
-        return dict(self._gate_motor_status)
+        return dict(self._gate_motor_status.get(target_guid, {
+            "state": "UNKNOWN",
+            "source": "",
+            "detail": "",
+            "updated_at": 0.0,
+        }))
+
+    def get_gate_motor_status(self, target_guid: str = ENTRY_GATE_GUID) -> dict[str, object]:
+        return dict(self._gate_motor_status.get(target_guid, {
+            "state": "UNKNOWN",
+            "source": "",
+            "detail": "",
+            "updated_at": 0.0,
+        }))
+
+    def update_gate_motor_status(self, target_guid: str) -> None:
+        if self._gate_server:
+            self._gate_motor_status[target_guid] = self._gate_server.get_gate_motor_status(target_guid=target_guid)
 
     def open_gate(self, target_guid: str = ENTRY_GATE_GUID) -> dict[str, object]:
         if not self._gate_server:
             return {"ok": False, "state": "UNKNOWN", "detail": "NO_SERVER"}
         result = self._gate_server.send_open_gate(target_guid=target_guid)
-        self._gate_motor_status = self._gate_server.get_gate_motor_status()
+        st = self._gate_server.get_gate_motor_status(target_guid=target_guid)
+        self._gate_motor_status[target_guid] = st
         self._append_gate_log(
             f"[CMD-RESULT] {target_guid} OPEN ok={result.get('ok')} state={result.get('state')} detail={result.get('detail')}"
         )
         # OCR 가 게이트를 열 때마다 sync 루프 잠금을 10초 연장
         # → 차가 카메라 앞에 있는 동안 OCR 이 계속 열 때마다 갱신되므로 게이트가 계속 열려 있음
         if result.get("ok") or result.get("state") in ("OPEN", "ALREADY_OPEN"):
-            self._sensor_close_until = max(
-                self._sensor_close_until, time.time() + 10.0
+            self._sensor_close_until[target_guid] = max(
+                self._sensor_close_until.get(target_guid, 0.0), time.time() + 10.0
             )
         return result
 
@@ -307,11 +322,83 @@ class DeviceManager:
         if not self._gate_server:
             return {"ok": False, "state": "UNKNOWN", "detail": "NO_SERVER"}
         result = self._gate_server.send_close_gate(target_guid=target_guid)
-        self._gate_motor_status = self._gate_server.get_gate_motor_status()
+        st = self._gate_server.get_gate_motor_status(target_guid=target_guid)
+        self._gate_motor_status[target_guid] = st
         self._append_gate_log(
             f"[CMD-RESULT] {target_guid} CLOSE ok={result.get('ok')} state={result.get('state')} detail={result.get('detail')}"
         )
         return result
+
+    def _sync_gate_logic(
+        self,
+        target_guid: str,
+        gate_connected: bool,
+        gate_sensor_state: int,
+        gate_auto_state_from_server: int = 0,
+        is_blocked: bool = False,
+    ) -> None:
+        """입구/출구 공통 게이트 동기화 로직."""
+        if not gate_connected:
+            if target_guid == ENTRY_GATE_GUID:
+                self._tx.set_gate_state(gate_sensor_state=0, gate_auto_state=0)
+            return
+
+        # 차량이 센서 위에 있는 동안, 또는 닫기 잠금 시간 동안 sync 루프 차단
+        if is_blocked:
+            return
+        if time.time() < self._sensor_close_until.get(target_guid, 0.0):
+            return
+
+        target_state = int(gate_sensor_state)
+        # 0: 미연결/알수없음 -> 기본 닫힘(1)
+        if target_state == 0:
+            if target_guid == ENTRY_GATE_GUID:
+                self._tx.set_gate_state(gate_sensor_state=1)
+            target_state = 1
+
+        desired_motor_state = "CLOSED"
+        desired_auto_state = 2
+
+        if target_state in (1, 2):
+            desired_motor_state = "CLOSED" if target_state == 1 else "OPEN"
+            desired_auto_state = 2 if target_state == 1 else 1
+        elif target_state == 3:
+            if gate_auto_state_from_server == 1:
+                desired_motor_state = "OPEN"
+                desired_auto_state = 1
+            elif gate_auto_state_from_server == 2:
+                desired_motor_state = "CLOSED"
+                desired_auto_state = 2
+            else:
+                desired_motor_state = "CLOSED"
+                desired_auto_state = 2
+        else:
+            return
+
+        current_motor_state = str(self.get_gate_motor_status(target_guid).get("state") or "").upper()
+        now = time.time()
+        last_cmd_at = self._last_manual_gate_cmd_at.get(target_guid, 0.0)
+
+        # 이미 원하는 상태이고 최근에 명령을 보냈으면 스킵
+        if current_motor_state == desired_motor_state and (now - last_cmd_at) < MANUAL_GATE_RESEND_INTERVAL_SEC:
+            return
+        
+        # 너무 빈번한 명령 전송 방지
+        if (now - last_cmd_at) < MANUAL_GATE_RESEND_INTERVAL_SEC:
+            return
+
+        if desired_motor_state == "OPEN":
+            result = self.open_gate(target_guid=target_guid)
+        else:
+            result = self.close_gate(target_guid=target_guid)
+            
+        self._last_manual_gate_cmd_at[target_guid] = now
+        
+        # 입구 게이트인 경우에만 TX 상태 업데이트 (출구는 LCD/자동 위주)
+        if result.get("ok") and target_guid == ENTRY_GATE_GUID:
+            if target_state in (1, 2):
+                self._tx.set_gate_state(gate_sensor_state=target_state)
+            self._tx.set_gate_auto_state(desired_auto_state)
 
     def sync_entry_gate_mode(
         self,
@@ -321,66 +408,13 @@ class DeviceManager:
         exit_sensor_detected: bool,
         gate_auto_state_from_server: int = 0,
     ) -> None:
-        """
-        대시보드의 차단기 상태(닫힘/열림/자동)를 실제 보드1_1 모터 상태와 동기화한다.
-        - 연결 해제 시: 서버 상태를 0(연결 안됨)으로 강제
-        - 연결 시 0이면: 기본값 2(열림)으로 복구
-        - 수동(1/2) 선택 시: 해당 상태를 유지하도록 주기적으로 재명령
-        - 자동(3) 선택 시: 서버의 gate_auto_state 가 1(열림)이면 열고, 2(닫힘)이면 닫음
-        """
-        if not gate_connected:
-            self._tx.set_gate_state(gate_sensor_state=0, gate_auto_state=0)
-            return
-
-        # 차량이 센서 위에 있는 동안, 또는 닫기 잠금 시간 동안 sync 루프 차단
-        if self._entry_sensor_blocked or self._exit_sensor_blocked:
-            return
-        if time.time() < self._sensor_close_until:
-            return
-
-        target_state = int(gate_sensor_state)
-        if target_state == 0:
-            # 미연결/알 수 없는 상태인 실제: 기본 '닫힀(1)'로 복구 (이전데비 OPEN 이었음)
-            self._tx.set_gate_state(gate_sensor_state=1)
-            target_state = 1
-
-        if target_state in (1, 2):
-            desired_motor_state = "CLOSED" if target_state == 1 else "OPEN"
-            # 수동 모드일 때는 보드가 알아서 멈추지만, 서버 상태 동기화를 위해 auto_state 도 맞춰준다.
-            desired_auto_state = 2 if target_state == 1 else 1
-        elif target_state == 3:
-            # 자동 모드: 서버(LPR/결제 로직)에서 결정한 결론(GATE_AUTO_STATE)을 따른다.
-            # 1: 열림, 2: 닫힘
-            if gate_auto_state_from_server == 1:
-                desired_motor_state = "OPEN"
-            elif gate_auto_state_from_server == 2:
-                desired_motor_state = "CLOSED"
-            else:
-                # 서버에 명시적 명령이 없으면 기본 닫힘
-                desired_motor_state = "CLOSED"
-            desired_auto_state = gate_auto_state_from_server
-        else:
-            return
-
-        current_motor_state = str(self._gate_motor_status.get("state") or "").upper()
-        now = time.time()
-        if (
-            current_motor_state == desired_motor_state
-            and (now - self._last_manual_gate_cmd_at) < MANUAL_GATE_RESEND_INTERVAL_SEC
-        ):
-            return
-        if (now - self._last_manual_gate_cmd_at) < MANUAL_GATE_RESEND_INTERVAL_SEC:
-            return
-
-        if target_state == 3:
-            result = self.open_gate() if desired_motor_state == "OPEN" else self.close_gate()
-        else:
-            result = self.close_gate() if target_state == 1 else self.open_gate()
-        self._last_manual_gate_cmd_at = now
-        if result.get("ok"):
-            if target_state in (1, 2):
-                self._tx.set_gate_state(gate_sensor_state=target_state)
-            self._tx.set_gate_auto_state(desired_auto_state)
+        self._sync_gate_logic(
+            target_guid=ENTRY_GATE_GUID,
+            gate_connected=gate_connected,
+            gate_sensor_state=gate_sensor_state,
+            gate_auto_state_from_server=gate_auto_state_from_server,
+            is_blocked=(self._entry_sensor_blocked or self._exit_sensor_blocked)
+        )
 
     def sync_exit_gate_mode(
         self,
@@ -388,37 +422,13 @@ class DeviceManager:
         gate_sensor_state: int,
         gate_auto_state_from_server: int = 0,
     ) -> None:
-        """
-        출구 차단기(DEV-GATE-2)를 서버 상태와 동기화한다.
-        """
-        if not gate_connected:
-            return
-
-        target_state = int(gate_sensor_state)
-        # 출구는 수동 모드(1, 2) 보다는 서버 결론(auto_state)을 따르는 것이 핵심
-        if target_state == 3:
-            if gate_auto_state_from_server == 1:
-                desired_motor_state = "OPEN"
-            elif gate_auto_state_from_server == 2:
-                desired_motor_state = "CLOSED"
-            else:
-                desired_motor_state = "CLOSED"
-            
-            # 현재 상태와 비교하여 불필요한 명령 중복 방지
-            current_motor_state = str(self._gate_motor_status.get("state") or "").upper()
-            now = time.time()
-            if current_motor_state == desired_motor_state and (now - self._last_manual_gate_cmd_at) < MANUAL_GATE_RESEND_INTERVAL_SEC:
-                return
-
-            if desired_motor_state == "OPEN":
-                result = self.open_gate(target_guid=EXIT_GATE_GUID)
-            else:
-                result = self.close_gate(target_guid=EXIT_GATE_GUID)
-            
-            if result.get("ok"):
-                self._last_manual_gate_cmd_at = now
-                # 동기화 완료 후 서버 상태도 맞춰준다 (혹시라도 sensor 에 의해 닫힌 경우 등 대응)
-                self._tx.set_gate_auto_state(gate_auto_state_from_server)
+        self._sync_gate_logic(
+            target_guid=EXIT_GATE_GUID,
+            gate_connected=gate_connected,
+            gate_sensor_state=gate_sensor_state,
+            gate_auto_state_from_server=gate_auto_state_from_server,
+            is_blocked=self._exit_sensor_blocked
+        )
 
     def write_siteid(self, site_id: str) -> None:
         if self._gate_server:

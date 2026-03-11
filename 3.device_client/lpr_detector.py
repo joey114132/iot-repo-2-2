@@ -39,25 +39,33 @@ except ImportError:
     _PADDLE_AVAILABLE = False
 
 
-def _extract_plate_text_from_ocr_result(ocr_results: Any) -> str:
-    """PaddleOCR 결과에서 번호판 문자만 추출."""
+def _extract_plate_text_from_ocr_result(ocr_results: Any) -> tuple[str, float]:
+    """PaddleOCR 결과에서 번호판 문자만 추출하고 평균 신뢰도 계산."""
     text_parts = []
+    conf_sum = 0.0
+    conf_count = 0
+
     if not ocr_results:
-        return ""
+        return "", 0.0
+
+    # PaddleOCR outputs are usually list of lines
     for line in ocr_results:
-        if hasattr(line, "rec_texts") and line.rec_texts:
-            text_parts.append("".join(line.rec_texts))
-        elif isinstance(line, dict) and "rec_texts" in line:
-            text_parts.append("".join(line["rec_texts"]))
-        elif isinstance(line, (list, tuple)):
-            for item in line:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    txt = item[1]
-                    if isinstance(txt, tuple):
-                        txt = txt[0] if len(txt) > 0 else ""
-                    text_parts.append(str(txt))
+        if not line: continue
+        for item in line:
+            # item format: [ [box], (text, confidence) ]
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                content = item[1]
+                if isinstance(content, (list, tuple)) and len(content) >= 2:
+                    txt = str(content[0])
+                    conf = float(content[1])
+                    text_parts.append(txt)
+                    conf_sum += conf
+                    conf_count += 1
+
     raw = "".join(text_parts)
-    return "".join(re.findall(r"[0-9가-힣]", raw))
+    clean_text = "".join(re.findall(r"[0-9가-힣]", raw))
+    avg_conf = conf_sum / conf_count if conf_count > 0 else 0.0
+    return clean_text, avg_conf
 
 
 class LprRecognitionWorker(QObject):
@@ -231,14 +239,20 @@ class LprRecognitionWorker(QObject):
                     try:
                         with self._shared_lock:
                             ocr_results = self._ocr.ocr(scaled)
-                        final_text = _extract_plate_text_from_ocr_result(ocr_results)
+                        final_text, confidence = _extract_plate_text_from_ocr_result(ocr_results)
                         last_ocr_text = final_text
-                        if len(final_text) >= 5:
+                        
+                        CONF_THRESHOLD = 0.8  # 사용자 요청: 신뢰도가 높을 때만 로그 전송
+                        
+                        if len(final_text) >= 5 and confidence >= CONF_THRESHOLD:
                             from datetime import datetime
                             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            self.result_ready.emit(f"{ts} | {final_text}")
+                            self.result_ready.emit(f"{ts} | {final_text} (conf={confidence:.2f})")
                         elif final_text:
-                            self.result_ready.emit(f"[미완성] {final_text}")
+                            # 만약 번호판은 보이지만 신뢰도가 낮거나 미완성인 경우 무시하거나 디버그 정보로만 표시
+                            # (사용자 요청: 신뢰도가 낮으면 로그를 보내지 않음)
+                            # self.result_ready.emit(f"[LowConf] {final_text} (conf={confidence:.2f})")
+                            pass
                     except Exception as ex:
                         self.result_ready.emit(f"[OCR 오류] {ex}")
                 break  # 한 프레임에서 첫 박스만 OCR

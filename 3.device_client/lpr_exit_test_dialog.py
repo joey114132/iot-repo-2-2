@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Optional
 import cv2
 import numpy as np
@@ -79,6 +80,9 @@ class LprExitTestDialog(QDialog):
 
         self._last_plate: str | None = None
         self._last_charge: int = 0
+        # After successful payment, ignore exit API for this plate for a while so OCR re-triggers don't ask for fee again.
+        self._exit_cooldown_until: float = 0.0
+        self._exit_cooldown_seconds: float = 55.0
 
         self._last_frame: Optional[np.ndarray] = None
         self._refresh_count = 0
@@ -114,23 +118,35 @@ class LprExitTestDialog(QDialog):
             parts = line.split(" | ")
             if len(parts) >= 2:
                 plate = parts[1].strip()
+                now = time.time()
+                if now < self._exit_cooldown_until:
+                    self.result_edit.append("⏳ [COOLDOWN] 차량 통과 대기 중 — 재요금 요청 일시 중지")
+                    cursor = self.result_edit.textCursor()
+                    cursor.movePosition(cursor.MoveOperation.End)
+                    self.result_edit.setTextCursor(cursor)
+                    return
                 try:
                     res = self._tx.record_exit(plate)
                     msg = res.get("message", "")
                     charge = int(res.get("charge", 0) or 0)
                     self._last_plate = plate
                     self._last_charge = charge
-                    # 결제 UI에 기본값으로 청구 금액을 채워준다.
                     self.edit_payment_amount.setText(str(charge))
                     self.result_edit.append(f"📡 [SERVER-EXIT] {msg} (Charge: {charge} won)")
                     if charge == 0:
                         self.result_edit.append("🔓 [HARDWARE] Exit Gate Triggered (OPEN)")
                         if callable(self._on_gate_open):
                             self._on_gate_open()
+                        self._exit_cooldown_until = now + self._exit_cooldown_seconds
                     else:
                         self.result_edit.append("🔒 [HARDWARE] Exit Gate Remains CLOSED (Payment Required)")
                 except Exception as e:
-                    self.result_edit.append(f"❌ [API-ERROR] {e}")
+                    err_msg = str(e)
+                    if "404" in err_msg:
+                        self.result_edit.append("ℹ️ [EXIT] 활성 주차 세션 없음 (이미 출차 처리됨)")
+                        self._exit_cooldown_until = now + self._exit_cooldown_seconds
+                    else:
+                        self.result_edit.append(f"❌ [API-ERROR] {e}")
 
         cursor = self.result_edit.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
@@ -201,6 +217,7 @@ class LprExitTestDialog(QDialog):
                 self.result_edit.append("🔓 [HARDWARE] Exit Gate Triggered (OPEN)")
                 if callable(self._on_gate_open):
                     self._on_gate_open()
+                self._exit_cooldown_until = time.time() + self._exit_cooldown_seconds
         except Exception as e:
             # Check if it's an HTTP 404 from the API client (if using requests, it raises HTTPError)
             err_msg = str(e)

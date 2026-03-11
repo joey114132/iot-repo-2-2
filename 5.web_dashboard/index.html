@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Parking Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon"></div>
+                    <h1>SmartPark</h1>
+                </div>
+            </div>
+            <ul class="nav-links">
+                <li class="active" data-section="overview">
+                    <span class="icon">📊</span>
+                    <span>개요</span>
+                </li>
+                <li data-section="parking-map">
+                    <span class="icon">🅿️</span>
+                    <span>주차 레이아웃</span>
+                </li>
+                <li data-section="residents">
+                    <span class="icon">🏠</span>
+                    <span>입주민 관리</span>
+                </li>
+                <li data-section="history">
+                    <span class="icon">🕒</span>
+                    <span>입출차 기록</span>
+                </li>
+                <li data-section="devices">
+                    <span class="icon">🔌</span>
+                    <span>장비 상태</span>
+                </li>
+            </ul>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <div class="indicator online"></div>
+                    <span>시스템 온라인</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="content">
+            <header class="top-bar">
+                <div class="search-bar">
+                    <input type="text" placeholder="차량 번호 검색...">
+                </div>
+                <div class="user-profile">
+                    <div class="operation-status">
+                        <span class="status-label">운영 상태:</span>
+                        <button id="op-mode-btn" class="op-btn on">ON</button>
+                    </div>
+                    <div class="avatar">Admin</div>
+                </div>
+            </header>
+
+            <!-- Sections -->
+            <div id="overview" class="section active">
+                <div class="section-header">
+                    <h2>실시간 대시보드 개요</h2>
+                    <p class="section-subtitle">주차장 현황을 한눈에 확인하세요.</p>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon total"></div>
+                        <div class="stat-info">
+                            <span class="stat-label">총 주차면</span>
+                            <h3 id="stat-total-slots">-</h3>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon occupied"></div>
+                        <div class="stat-info">
+                            <span class="stat-label">주차 중</span>
+                            <h3 id="stat-occupied-slots">-</h3>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon free"></div>
+                        <div class="stat-info">
+                            <span class="stat-label">빈 공간</span>
+                            <h3 id="stat-free-slots">-</h3>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon active-devices"></div>
+                        <div class="stat-info">
+                            <span class="stat-label">활성 장비</span>
+                            <h3 id="stat-active-devices">-</h3>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="grid-card recent-events">
+                        <div class="card-header">
+                            <h3>최근 이벤트</h3>
+                            <button class="view-all">전체보기</button>
+                        </div>
+                        <div class="card-body">
+                            <ul id="recent-events-list" class="event-list">
+                                <!-- Events will be populated by JS -->
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <div class="grid-card gate-control">
+                        <div class="card-header">
+                            <h3>차단기 제어</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="gate-status-display">
+                                <div id="gate-indicator" class="gate-indicator-ui closed">
+                                    <div class="gate-arm"></div>
+                                </div>
+                                <div class="gate-status-text">
+                                    <span class="current-status-label">현재 상태</span>
+                                    <h4 id="current-gate-status">닫힘</h4>
+                                </div>
+                            </div>
+                            <div class="gate-actions">
+                                <button id="gate-open-btn" class="control-btn open">열기</button>
+                                <button id="gate-close-btn" class="control-btn close">닫기</button>
+                                <button id="gate-auto-btn" class="control-btn auto">자동</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="parking-map" class="section">
+                <div class="section-header">
+                    <h2>주차 레이아웃 맵</h2>
+                </div>
+                <div class="map-container card">
+                    <div class="parking-zone">
+                        <h4>노상 주차면</h4>
+                        <div id="street-parking" class="parking-grid">
+                            <!-- Slots S1-S4 populated by JS -->
+                        </div>
+                    </div>
+                    <div class="parking-zone">
+                        <h4>주차 타워</h4>
+                        <div id="tower-parking" class="parking-grid">
+                            <!-- Slots T1-T6 populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="residents" class="section">
+                <div class="section-header">
+                    <h2>입주민 관리</h2>
+                    <button class="add-btn">+ 입주민 등록</button>
+                </div>
+                <div class="table-container card">
+                    <table id="residents-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>호수</th>
+                                <th>이름</th>
+                                <th>연락처</th>
+                                <th>차량번호</th>
+                                <th>잔액</th>
+                                <th>관리</th>
+                            </tr>
+                        </thead>
+                        <tbody id="residents-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="history" class="section">
+                <div class="section-header">
+                    <h2>입출차 기록</h2>
+                </div>
+                <div class="table-container card">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>차량번호</th>
+                                <th>입차 시간</th>
+                                <th>출차 시간</th>
+                                <th>상태</th>
+                                <th>요금</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="devices" class="section">
+                <div class="section-header">
+                    <h2>장비 상태</h2>
+                </div>
+                <div class="devices-grid">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

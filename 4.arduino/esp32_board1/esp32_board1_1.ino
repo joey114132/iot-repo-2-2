@@ -88,10 +88,9 @@ const unsigned long RECONNECT_INTERVAL_MS = 3000;
 #define DEVICE_GUID "DEV-GATE-1"
 
 // 센서별 GUID(16자) + 영문 센서명(14자). 접속 시 서버 전송 → DB/리스트 연동
-#define DEVICE_COUNT 4
+#define DEVICE_COUNT 3
 static const struct { const char guid[17]; const char name[15]; } DEVICE_LIST[DEVICE_COUNT] = {
     { "ESP32-S1-ENTRY01", "EntryVehDetect" },  // 입구 차량 감지
-    //{ "ESP32-S2-EXIT01 ", "ExitVehDetect" },   // 출구 차량 감지
     { "ESP32-RFID-01   ", "RFIDReader" },
     { "ESP32-GATE-01   ", "GateServo" },
 };
@@ -250,7 +249,7 @@ void setup() {
 
     delay(INIT_SLEEP_MS);
     myServo.setPeriodHertz(50);
-    myServo.attach(13, 500, 2400);
+    myServo.attach(27, 500, 2400);
     myServo.write(0);
 
     delay(INIT_SLEEP_MS);

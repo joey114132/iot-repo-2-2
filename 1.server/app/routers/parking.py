@@ -1,3 +1,5 @@
+import math
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,10 +26,19 @@ GATE_SENSOR_STATE = settings.gate_sensor_state
 # 0: 동작하지 않음, 1: 열림, 2: 닫힘
 GATE_AUTO_STATE = settings.gate_auto_state
 
+# 중복 방지 캐시: { "license_plate": last_seen_time }
+LAST_SEEN_PLATES = {}
+DUPLICATE_GRACE_PERIOD = 10.0  # 10초
+
 
 @router.get("/slots", response_model=List[schemas.ParkingSlotRead])
 def list_slots(db: Session = Depends(get_db)):
     return db.query(models.ParkingSlot).all()
+
+
+@router.get("/records", response_model=List[schemas.ParkingRecordRead])
+def list_parking_records(db: Session = Depends(get_db)):
+    return db.query(models.ParkingRecord).order_by(models.ParkingRecord.entry_timestamp.desc()).all()
 
 
 @router.post("/slots", response_model=schemas.ParkingSlotRead)
@@ -197,6 +208,30 @@ class PaymentEvent(BaseModel):
 
 @router.post("/events/entry")
 def handle_entry(event: EntryEvent, db: Session = Depends(get_db)):
+    global GATE_AUTO_STATE, LAST_SEEN_PLATES
+    
+    now = datetime.utcnow().timestamp()
+    plate = event.license_plate
+    
+    # 1. 최근 10초 내에 이미 처리된 적이 있는 번호판인지 확인
+    if plate in LAST_SEEN_PLATES:
+        if now - LAST_SEEN_PLATES[plate] < DUPLICATE_GRACE_PERIOD:
+            GATE_AUTO_STATE = 1
+            set_env_value("GATE_AUTO_STATE", "1")
+            return {"ok": True, "message": f"Vehicle {plate} recently processed (duplicate ignored).", "gate": "open"}
+    
+    LAST_SEEN_PLATES[plate] = now
+
+    # 2. 이미 입차 중인 차량인지 확인 (models.ParkingRecord 기준)
+    existing = db.query(models.ParkingRecord).filter(
+        models.ParkingRecord.license_plate == plate,
+        models.ParkingRecord.exit_timestamp.is_(None),
+    ).first()
+    if existing:
+        GATE_AUTO_STATE = 1
+        set_env_value("GATE_AUTO_STATE", "1")
+        return {"ok": True, "message": f"Vehicle {plate} already in (no duplicate entry).", "gate": "open"}
+
     entry_time = datetime.utcnow()
     resident = db.query(models.Resident).filter(models.Resident.car_plate == event.license_plate).first()
     is_reg = bool(resident)
@@ -209,7 +244,6 @@ def handle_entry(event: EntryEvent, db: Session = Depends(get_db)):
     db.add(record)
     db.commit()
 
-    global GATE_AUTO_STATE
     GATE_AUTO_STATE = 1
     set_env_value("GATE_AUTO_STATE", "1")
 
@@ -226,7 +260,19 @@ def handle_exit(event: ExitEvent, db: Session = Depends(get_db)):
     if not record:
         raise HTTPException(status_code=404, detail="Active parking record not found")
 
-    global GATE_AUTO_STATE
+    global GATE_AUTO_STATE, LAST_SEEN_PLATES
+    
+    now = datetime.utcnow().timestamp()
+    plate = event.license_plate
+    
+    # 최근 10초 내 중복 처리 방지
+    if plate in LAST_SEEN_PLATES:
+        if now - LAST_SEEN_PLATES[plate] < DUPLICATE_GRACE_PERIOD:
+            GATE_AUTO_STATE = 1
+            set_env_value("GATE_AUTO_STATE", "1")
+            return {"ok": True, "message": f"Vehicle {plate} recently processed (duplicate ignored).", "gate": "open"}
+    
+    LAST_SEEN_PLATES[plate] = now
 
     if event.ext_rfid_registered or record.is_registered:
         # Fetch the resident to check and deduct balance
