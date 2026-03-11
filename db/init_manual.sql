@@ -1,36 +1,41 @@
--- 1. DB 선택
+-- 1. DB Initialization
 CREATE DATABASE IF NOT EXISTS smart_parking
   DEFAULT CHARACTER SET utf8mb4
   DEFAULT COLLATE utf8mb4_unicode_ci;
 
 USE smart_parking;
 
--- 2. 기존 테이블 삭제 (FK 순서 고려: 자식 → 부모)
+-- 2. Drop Tables (Child -> Parent)
 DROP TABLE IF EXISTS event_logs;
 DROP TABLE IF EXISTS sensors;
 DROP TABLE IF EXISTS rfid_cards;
+DROP TABLE IF EXISTS payment_cards;
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS guest_visits;
 DROP TABLE IF EXISTS residents;
 DROP TABLE IF EXISTS parking_slots;
+DROP TABLE IF EXISTS device_clients;
 DROP TABLE IF EXISTS devices;
 DROP TABLE IF EXISTS parking_records;
 
--- 3. 새 테이블 생성
+-- 3. Unified Table Creation
 
+-- Device Table (from Manual: Includes device_guid)
 CREATE TABLE devices (
   id              INT AUTO_INCREMENT PRIMARY KEY,
   name            VARCHAR(100) NOT NULL,
-  type            VARCHAR(50)  NOT NULL,         -- esp32, esp32-cam, arduino 등
-  device_type     ENUM('CLIENT','SERVER') NOT NULL, -- 'CLIENT' 또는 'SERVER'
-  connection_type VARCHAR(20)  NOT NULL DEFAULT 'ethernet', -- ethernet, serial 등
-  connection_detail VARCHAR(100) NULL,           -- 예: 'tcp', 'udp,tcp'
-  control_method  VARCHAR(50)  NULL,             -- 예: 'socket', 'restapi'
+  type            VARCHAR(50)  NOT NULL,         
+  device_type     ENUM('CLIENT','SERVER') NOT NULL, 
+  connection_type VARCHAR(20)  NOT NULL DEFAULT 'ethernet',
+  connection_detail VARCHAR(100) NULL,           
+  control_method  VARCHAR(50)  NULL,             
   ip_address      VARCHAR(45)  NULL,
-  port_info       VARCHAR(50)  NULL,             -- 이더넷: 포트번호, serial: 포트명
+  port_info       VARCHAR(50)  NULL,             
   is_active       TINYINT(1)   NOT NULL DEFAULT 1,
   is_connected    TINYINT(1)   NOT NULL DEFAULT 0,
-  sensor_guids    VARCHAR(255) NULL,             -- 이 장비에 연결된 센서 GUID 리스트(쉼표 구분)
-  device_guid     VARCHAR(64)  NULL,             -- 장비 자체를 구분하는 GUID (옵션)
-  config          VARCHAR(255) NULL,             -- JSON 문자열 등
+  sensor_guids    VARCHAR(255) NULL,             
+  device_guid     VARCHAR(64)  NULL,             
+  config          VARCHAR(255) NULL,             
   created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_devices_id (id),
@@ -49,13 +54,16 @@ CREATE TABLE device_clients (
   UNIQUE KEY idx_device_clients_no (device_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 입주민 테이블
+-- Resident Table (Manual core + Kong's password/balance)
 CREATE TABLE residents (
   id           INT AUTO_INCREMENT PRIMARY KEY,
-  unit_number  VARCHAR(20)  NOT NULL,  -- 몇 호
+  unit_number  VARCHAR(20)  NOT NULL,
   name         VARCHAR(50)  NOT NULL,
   phone        VARCHAR(20)  NOT NULL,
+  password     VARCHAR(255) NOT NULL DEFAULT '1234', -- From Kong
   car_plate    VARCHAR(20)  NOT NULL,
+  balance      INT          NOT NULL DEFAULT 0,      -- From Kong
+  is_active    TINYINT(1)   NOT NULL DEFAULT 1,
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_residents_id (id),
@@ -79,52 +87,35 @@ CREATE TABLE rfid_cards (
     ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 센서 테이블 (카메라, IR, RFID, 게이트 서보 등)
+-- Sensor Table (Full Manual Logic)
 CREATE TABLE sensors (
-  id           INT AUTO_INCREMENT PRIMARY KEY,
-  guid         VARCHAR(32)  NOT NULL,
-  name         VARCHAR(50)  NOT NULL,
-  sensor_type  VARCHAR(30)  NOT NULL,            -- CAMERA, ENTRY_IR, EXIT_IR, RFID, GATE_SERVO 등
-  sensor_states TINYINT      NOT NULL DEFAULT 0, -- 0:연결안됨 1:닫힘 2:열림 3:자동
-  gate_auto_state TINYINT    NOT NULL DEFAULT 0, -- 자동일 때 실제 상태(0:동작없음 1:열림 2:닫힘)
-  is_active    TINYINT(1)   NOT NULL DEFAULT 1,  -- 사용 유무
-  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  created_by   VARCHAR(50)  NOT NULL,            -- 등록한 사람
-  UNIQUE KEY idx_sensors_guid (guid)
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  guid            VARCHAR(32)  NOT NULL UNIQUE,
+  name            VARCHAR(50)  NOT NULL,
+  sensor_type     VARCHAR(30)  NOT NULL,            
+  sensor_states   TINYINT      NOT NULL DEFAULT 0,  -- 0:Disconnected, 1:Closed, 2:Open, 3:Auto
+  gate_auto_state TINYINT      NOT NULL DEFAULT 0,  -- 0:None, 1:Open, 2:Close
+  is_active       TINYINT(1)   NOT NULL DEFAULT 1,  
+  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by      VARCHAR(50)  NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 주차면 테이블 (sensor_connected 포함)
+-- Parking Slots (Manual includes sensor_guid mapping)
 CREATE TABLE parking_slots (
   id                 INT AUTO_INCREMENT PRIMARY KEY,
-  name               VARCHAR(50)  NOT NULL,      -- S1~S4, T1~T6 등
-  level              VARCHAR(20)  NULL,          -- street, tower 등
+  name               VARCHAR(50)  NOT NULL,      
+  level              VARCHAR(20)  NULL,          
   is_occupied        TINYINT(1)   NOT NULL DEFAULT 0,
   sensor_connected   TINYINT(1)   NOT NULL DEFAULT 0,
-  sensor_guid        VARCHAR(32)  NULL,          -- 연결된 센서 GUID (sensors.guid 와 매핑용)
+  sensor_guid        VARCHAR(32)  NULL,          
   last_vehicle_plate VARCHAR(20)  NULL,
   created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_parking_slots_id (id),
-  KEY idx_parking_slots_name (name),
   KEY idx_parking_slots_sensor_guid (sensor_guid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 이벤트 로그 테이블
-CREATE TABLE event_logs (
-  id         INT AUTO_INCREMENT PRIMARY KEY,
-  device_id  INT NULL,
-  event_type VARCHAR(50)  NOT NULL,             -- ENTER, EXIT, ERROR, STATUS 등
-  message    VARCHAR(255) NULL,
-  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_event_logs_id (id),
-  KEY idx_event_logs_device_id (device_id),
-  CONSTRAINT fk_event_logs_device
-    FOREIGN KEY (device_id) REFERENCES devices(id)
-    ON DELETE SET NULL
-    ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 주차 이용 기록 테이블 (고트래픽 대응)
+-- Parking Records (Manual's high-traffic table)
 CREATE TABLE parking_records (
     record_id      BIGINT AUTO_INCREMENT PRIMARY KEY,
     license_plate  VARCHAR(15)  NOT NULL,
@@ -132,7 +123,6 @@ CREATE TABLE parking_records (
     exit_timestamp DATETIME(3)  NULL,
     is_registered  TINYINT(1)   NOT NULL DEFAULT 0,
     charge_amount  INT          DEFAULT 0,
-    
     INDEX idx_active_vehicle (license_plate, exit_timestamp),
     INDEX idx_entry_time (entry_timestamp)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

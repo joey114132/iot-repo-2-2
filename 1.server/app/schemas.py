@@ -44,6 +44,7 @@ class ParkingSlotBase(BaseModel):
     name: str
     level: Optional[str] = None
     sensor_connected: bool = False
+    sensor_guid: Optional[str] = None
 
 
 class ParkingSlotCreate(ParkingSlotBase):
@@ -77,7 +78,9 @@ class ResidentBase(BaseModel):
     name: str
     phone: str
     car_plate: str
+    password: str = "1234"
     balance: int = 0
+    is_active: bool = True
 
 
 class ResidentCreate(ResidentBase):

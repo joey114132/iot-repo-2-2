@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, BigInteger
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -44,6 +44,8 @@ class ParkingSlot(Base):
     is_occupied = Column(Boolean, default=False)
     # 센서(ESP32/Arduino) 연결 여부. 연결되지 않았으면 대시보드에서 회색으로 표시.
     sensor_connected = Column(Boolean, default=False)
+    # 연결된 센서 GUID (sensors.guid 와 매핑용)
+    sensor_guid = Column(String(32), nullable=True, index=True)
     last_vehicle_plate = Column(String(20), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -75,7 +77,9 @@ class Resident(Base):
     name = Column(String(50), nullable=False)
     phone = Column(String(20), nullable=False)
     car_plate = Column(String(20), nullable=False)
-    balance = Column(Integer, default=0)
+    password = Column(String(255), nullable=False, default="1234")
+    balance = Column(Integer, default=0, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(
@@ -145,7 +149,7 @@ class DeviceClient(Base):
 class ParkingRecord(Base):
     __tablename__ = "parking_records"
 
-    record_id = Column(Integer, primary_key=True, autoincrement=True)
+    record_id = Column(BigInteger, primary_key=True, autoincrement=True)
     license_plate = Column(String(15), nullable=False)
     entry_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
     exit_timestamp = Column(DateTime, nullable=True)

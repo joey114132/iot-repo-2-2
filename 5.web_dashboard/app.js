@@ -101,6 +101,20 @@ function updateGateUI(data) {
     else autoBtn.classList.remove('active');
 }
 
+function updateDevicesSummary(devices) {
+    const indicator = document.querySelector('.sidebar .indicator');
+    const statusText = document.querySelector('.sidebar .status-indicator span');
+    
+    const anyConnected = devices.some(d => d.is_connected);
+    if (anyConnected) {
+        indicator.className = 'indicator online';
+        statusText.textContent = '시스템 온라인';
+    } else {
+        indicator.className = 'indicator offline';
+        statusText.textContent = '시스템 오프라인';
+    }
+}
+
 function updateEvents(events) {
     const list = document.getElementById('recent-events-list');
     list.innerHTML = '';
